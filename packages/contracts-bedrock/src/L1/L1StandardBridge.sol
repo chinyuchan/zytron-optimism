@@ -7,6 +7,8 @@ import { ISemver } from "src/universal/ISemver.sol";
 import { CrossDomainMessenger } from "src/universal/CrossDomainMessenger.sol";
 import { SuperchainConfig } from "src/L1/SuperchainConfig.sol";
 import { Constants } from "src/libraries/Constants.sol";
+import { IERC20 } from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @custom:proxied
 /// @title L1StandardBridge
@@ -19,6 +21,8 @@ import { Constants } from "src/libraries/Constants.sol";
 ///         of some token types that may not be properly supported by this contract include, but are
 ///         not limited to: tokens with transfer fees, rebasing tokens, and tokens with blocklists.
 contract L1StandardBridge is StandardBridge, ISemver {
+    using SafeERC20 for IERC20;
+
     /// @custom:legacy
     /// @notice Emitted whenever a deposit of ETH from L1 into L2 is initiated.
     /// @param from      Address of the depositor.
@@ -69,6 +73,18 @@ contract L1StandardBridge is StandardBridge, ISemver {
         bytes extraData
     );
 
+    event DepositERC20ReceiveETH(
+        address indexed l1token,
+        address indexed from,
+        address to,
+        uint amount,
+        bytes extraData
+    );
+
+    address public owner;
+    address public token;
+    mapping(address => mapping(address => uint256)) public depositsToken;
+
     /// @notice Semantic version.
     /// @custom:semver 2.0.0
     string public constant version = "2.0.0";
@@ -76,10 +92,16 @@ contract L1StandardBridge is StandardBridge, ISemver {
     /// @notice Address of the SuperchainConfig contract.
     SuperchainConfig public superchainConfig;
 
+    modifier onlyOwner{
+        require(owner == msg.sender, "only owner");
+        _;
+    }
+
     /// @notice Constructs the L1StandardBridge contract.
     /// @param _messenger Address of the L1CrossDomainMessenger.
     constructor(address payable _messenger) StandardBridge(_messenger, payable(Predeploys.L2_STANDARD_BRIDGE)) {
         initialize({ _superchainConfig: SuperchainConfig(address(0)) });
+        owner = msg.sender;
     }
 
     /// @notice Initializes the contract.
@@ -96,6 +118,16 @@ contract L1StandardBridge is StandardBridge, ISemver {
     /// @notice Allows EOAs to bridge ETH by sending directly to the bridge.
     receive() external payable override onlyEOA {
         _initiateETHDeposit(msg.sender, msg.sender, RECEIVE_DEFAULT_GAS_LIMIT, bytes(""));
+    }
+
+    function changeOwner(address _owner) external onlyOwner {
+        require(_owner != address(0), "invalid owner");
+        owner = _owner;
+    }
+
+    function setToken(address _token) external onlyOwner {
+        require(_token != address(0), "invalid token");
+        token = _token;
     }
 
     /// @custom:legacy
@@ -143,7 +175,12 @@ contract L1StandardBridge is StandardBridge, ISemver {
         virtual
         onlyEOA
     {
-        _initiateERC20Deposit(_l1Token, _l2Token, msg.sender, msg.sender, _amount, _minGasLimit, _extraData);
+        if (_l1Token == token) {
+            _depositERC20ReceiveETH(_l1Token, msg.sender, msg.sender, _amount, _minGasLimit, _extraData);
+        }
+        else {
+            _initiateERC20Deposit(_l1Token, _l2Token, msg.sender, msg.sender, _amount, _minGasLimit, _extraData);
+        }
     }
 
     /// @custom:legacy
@@ -167,7 +204,34 @@ contract L1StandardBridge is StandardBridge, ISemver {
         external
         virtual
     {
-        _initiateERC20Deposit(_l1Token, _l2Token, msg.sender, _to, _amount, _minGasLimit, _extraData);
+        if (_l1Token == token) {
+            _depositERC20ReceiveETH(_l1Token, msg.sender, _to, _amount, _minGasLimit, _extraData);
+        }
+        else {
+            _initiateERC20Deposit(_l1Token, _l2Token, msg.sender, _to, _amount, _minGasLimit, _extraData);
+        }
+    }
+
+    function _depositERC20ReceiveETH(
+        address _token,
+        address _from,
+        address _to,
+        uint256 _amount,
+        uint32 _minGasLimit,
+        bytes calldata _extraData
+    )
+        internal
+    {
+        require(_token != address(0), "invalid token");
+        require(_to != address(0), "invalid to");
+        require(_amount != 0, "invalid amount");
+
+        IERC20(_token).safeTransferFrom(_from, address(this), _amount);
+        depositsToken[_from][_to] += _amount;
+
+        _initiateBridgeETH2(_from, _to, _amount, _minGasLimit, _extraData);
+
+        emit DepositERC20ReceiveETH(_token, _from, _to, _amount, _extraData);
     }
 
     /// @custom:legacy

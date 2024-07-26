@@ -247,6 +247,28 @@ abstract contract StandardBridge is Initializable {
         require(success, "StandardBridge: ETH transfer failed");
     }
 
+    function finalizeBridgeETH2(
+        address _from,
+        address _to,
+        uint256 _amount,
+        bytes calldata _extraData
+    )
+    public
+    payable
+    onlyOtherBridge
+    {
+        require(paused() == false, "StandardBridge: paused");
+        require(_to != address(this), "StandardBridge: cannot send to self");
+        require(_to != address(MESSENGER), "StandardBridge: cannot send to messenger");
+
+        // Emit the correct events. By default this will be _amount, but child
+        // contracts may override this function in order to emit legacy events as well.
+        _emitETHBridgeFinalized(_from, _to, _amount, _extraData);
+
+        bool success = SafeCall.call(_to, gasleft(), _amount, hex"");
+        require(success, "StandardBridge: ETH transfer failed");
+    }
+
     /// @notice Finalizes an ERC20 bridge on this chain. Can only be triggered by the other
     ///         StandardBridge contract on the remote chain.
     /// @param _localToken  Address of the ERC20 on this chain.
@@ -312,6 +334,27 @@ abstract contract StandardBridge is Initializable {
         MESSENGER.sendMessage{ value: _amount }(
             address(OTHER_BRIDGE),
             abi.encodeWithSelector(this.finalizeBridgeETH.selector, _from, _to, _amount, _extraData),
+            _minGasLimit
+        );
+    }
+
+    function _initiateBridgeETH2(
+        address _from,
+        address _to,
+        uint256 _amount,
+        uint32 _minGasLimit,
+        bytes memory _extraData
+    )
+    internal
+    {
+        // Emit the correct events. By default this will be _amount, but child
+        // contracts may override this function in order to emit legacy events as well.
+        _emitETHBridgeInitiated(_from, _to, _amount, _extraData);
+
+        MESSENGER.sendMessage2(
+            address(OTHER_BRIDGE),
+            _amount,
+            abi.encodeWithSelector(this.finalizeBridgeETH2.selector, _from, _to, _amount, _extraData),
             _minGasLimit
         );
     }
